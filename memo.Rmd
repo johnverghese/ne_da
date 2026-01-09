@@ -1,0 +1,206 @@
+---
+title: "Comparing the Presidential Election with the 2024 Paid Sick Leave Referendum"
+output: html_document
+date: "2026-01-08"
+author: "John Verghese"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(sf)
+library(knitr)
+library(kableExtra)
+library(ggrepel)
+library(gt)
+library(plotly)
+
+pres <- read_csv("ne_pres_cleaned.csv")
+abor <- read_csv("ne_439_cleaned.csv")
+paid <- read_csv("ne_436_cleaned.csv")
+
+cens <- read_sf("ne_census_wide.gpkg")
+cens_long <- read_sf("ne_census_long.gpkg")
+
+elec <- pres |> 
+  inner_join(paid, by="county", suffix = c("_pres", "_paid")) |>
+  mutate(split_margin = votes_for - votes_kamala)
+
+elec_cens_long <- cens_long |> inner_join(elec, by="county")
+  
+elec_cens_geo <- cens |> inner_join(elec, by="county")
+elec_cens <- st_drop_geometry(elec_cens_geo) |>
+  select(-c("GEOID","NAME", "acs_male", "acs_female")) |>
+  relocate(county, acs_total_pop, votes_totals_pres, votes_totals_paid, acs_median_income) |>
+  mutate(across(-county, ~ if_else(.x < 1, .x * 100, .x)))
+
+```
+
+  Paid Sick Leave for Nebraskans and a table of progressive-allied groups, including the AFL-CIO, Planned Parenthood, and the ACLU, supported a referendum mandating paid sick leave for all working Nebraskans. Initiative 436 went on the ballot in the 2024 general election, sharing the ballot with the high-salience presidential election, downballot races, and a number of other ballot measures, including Initiative 439 to codify a woman's right to choose.
+  Initiative 436 proved to be the most popular item on the ballot. Nearly 75% of Nebraskans supported the measure^[Thanks to the NE Secretary of State and the US Census Bureau for all data used to generate this report], with all but four counties (which are among the least populous in the state) returning a majority for the measure:
+``` {r broad_support_table, echo = FALSE}
+elec_cens |> 
+  filter(votes_for < 50) |>
+  select(county, votes_for, acs_total_pop) |>
+  arrange(votes_for) |>
+  add_row(elec_cens |> 
+            filter(votes_for > 50) |> 
+            summarize(county = "All Other Counties", 
+                      votes_for = weighted.mean(x = votes_for, w = votes_totals_paid),
+                      acs_total_pop = sum(acs_total_pop)
+                      )
+          ) |>
+  gt( rowname_col = "county") |>
+  fmt_percent(columns = "votes_for", 
+                 scale_values = FALSE,
+                 decimals = 1) |>
+  fmt_number(columns = "acs_total_pop", decimals = 0) |>
+  cols_label(votes_for ~ "Init 436 Support", acs_total_pop ~ "Population") 
+    
+
+```
+This overwhelming support demonstrates the popularity of progressive economic measures to support working Nebraskans. In every county in the state, Initiative 436 significantly overperformed the top of the Democratic ticket:
+
+``` {r overperformance, fig.height = 15, echo = FALSE}
+elec_cens |> 
+  ggplot() + 
+  geom_point(aes( x = votes_kamala, y = fct_reorder(county, desc(votes_kamala)))) + 
+  geom_segment(aes( 
+    x = votes_kamala, 
+    xend = votes_for, 
+    y = fct_reorder(county, desc(votes_for))), 
+    arrow = arrow(length = unit(0.05, "inches"))
+  ) +
+  labs(title = "Paid Leave Beats Top-Ticket Dems by ~40 points") +
+  xlab("Increase in support between Harris/Walz and Initiative 436") +
+  ylab("")
+```
+
+
+
+  Omaha and Lincoln metropolitan counties of Douglas/Sarpy and Lancaster counties, in addition to the majority-Indigenous Thurston County returned the strongest support for the Democratic ticket and the strongest majorities in support of Initiative 436:
+
+```{r corr_plot, echo = FALSE}
+ggplot(elec_cens, aes(x = votes_kamala, y = votes_for)) +
+  geom_point(aes(color = county, size = acs_total_pop), show.legend = FALSE, alpha = 0.5) +
+  geom_text_repel(
+    data = elec_cens |> 
+      filter(
+        county %in% c(
+        "Thurston", 
+        "Sarpy", 
+        "Douglas", 
+        "Lancaster", 
+        "Keya Paha")
+        ), 
+    aes(
+      x = votes_kamala, 
+      y = votes_for, 
+      label=county
+      ), 
+    position = "jitter",
+    arrow = arrow(length = unit(0.25, "lines"))
+    ) +
+  labs(
+    title = "Top-Ticket Dem v Initiative 436 Support",
+    x = "% Harris/Walz Support",
+    y = "% Yes on Initiative 436"
+  ) +
+  xlim(0,100) + 
+  ylim(0,100)
+```
+
+There was a strong racial and age correlation with support for the ballot measure, with young, black, and Hispanic counties returning significant support:
+
+```{r facet_plots, warning = FALSE, message = FALSE, echo=FALSE}
+elec_cens_long |>
+  filter(!acs_var %in% c("acs_male", "acs_female")) |>
+  mutate(acs_var = str_to_title(str_replace(str_remove(acs_var, "acs_"), "_", " "))) |>
+  ggplot(aes(x = votes_for, y = acs_est)) + 
+    geom_point(aes(color = county, size = votes_totals_pres), show.legend = FALSE, alpha = 0.5) +
+    xlim(0,1) +
+    geom_smooth(se = FALSE) +
+    facet_wrap(~acs_var, scales = "free_y") +
+    labs(x = "Initiative 436 Support", y = "")
+```
+
+In the five counties with more than a quarter of the population identifying as Latino - Colfax, Dakota, Dawson, Hall, and Saline - paid sick leave beat the top of the ticket by ~45 points:
+
+``` {r hispanic_counties, echo=FALSE}
+elec_cens |> 
+  arrange(desc(acs_hispanic)) |> 
+  head(5) |> 
+  select(county, acs_total_pop, votes_kamala, votes_for, acs_hispanic) |> 
+  relocate(county, acs_hispanic) |> 
+  mutate(split_margin = votes_for - votes_kamala) |>
+  gt( rowname_col = "county") |>
+  fmt_percent(columns = c("votes_for", "votes_kamala", "split_margin", "acs_hispanic"),  
+                 scale_values = FALSE,
+                 decimals = 1) |>
+  fmt_number(columns = "acs_total_pop", decimals = 0) |>
+  cols_label(votes_for ~ "Init 436 Support", 
+             acs_total_pop ~ "Population",
+             acs_hispanic ~ "% Latino",
+             votes_kamala ~ "Harris Support",
+             split_margin ~ "Difference") 
+```
+
+The takeaway: voters in Nebraska across geographies have indicated a willingness to support progressive economic policies. Progressives in Nebraska would do well to strongly associate themselves with the success of Initiative 436, and continue to focus on economically progressive policies.
+
+
+``` {r votes_on_table, echo = FALSE}
+elec_cens |> 
+  mutate(county_type = case_when
+         (county %in% c("Douglas", "Lancaster", "Sarpy") ~ "Metro", 
+          county == "Thurston" ~ "Thurston", 
+           county %in% c("Colfax", "Dakota", "Dawson", "Hall", "Saline") ~ "Latino > 25%", 
+           .default = "Rest of State")) |> 
+  group_by(county_type) |> 
+  summarize(total_votes = sum(votes_totals_pres), 
+            votes_for_t = sum((votes_for/100) * votes_totals_paid), 
+            votes_kamala_t = sum((votes_kamala/100) * votes_totals_pres),
+            votes_on_table = sum((votes_for/100) * votes_totals_paid) - sum((votes_kamala/100) * votes_totals_pres)) |>
+  gt(rowname_col = "county_type") |> 
+  fmt_number(columns = c("total_votes", "votes_for_t", "votes_kamala_t", "votes_on_table"), decimals = 0) |>
+  cols_label(total_votes = "Total Voters",
+             votes_for_t = "Initiative 436 Supporters",
+             votes_kamala_t = "Top-ticket Dem Supporters",
+             votes_on_table = "Swingable Voters")
+  
+
+```
+
+
+
+See the geographic distribution of increased support for paid sick leave vs the Harris/Walz ticket below:
+
+```{r map, fig.width = 15, out.width = "100%", warning = FALSE,  echo = FALSE}
+
+ggplot(elec_cens_geo) +
+  geom_sf(aes(fill = split_margin), color = "white", size = 0.3) +
+  scale_fill_gradient2(
+    low = "white",
+    mid = "#ffffff", 
+    high = "#2b83ba",
+    midpoint = 0.3,
+    name = "Overperformance of Paid Leave Policy vs Dem Ticket",
+    labels = function(x) paste0(ifelse(x > 0, "+", ""), x * 100, "%")
+  ) +
+  labs(
+    title = "Geographic Distribution of Split-Ticket Voting",
+    subtitle = "Blue = Increasing support for Initiative 436 relative to Harris/Walz",
+    caption = "Nebraska 2024"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "right"
+  ) + 
+  geom_sf_text(aes(label = county), position = position_dodge2())
+```
+
+Additional analysis is available upon request, including comparison of Initiative 439, on a woman's right to choose, with the paid sick leave and presidential elections.
+
+_AI Disclaimer: I wrote all of the code used to generate this document, with the exception of choosing which census variables to pull into the analysis._
+
